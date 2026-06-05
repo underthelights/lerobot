@@ -39,6 +39,7 @@ import logging
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import torch
 from huggingface_hub import HfApi
 from requests import HTTPError
@@ -184,10 +185,63 @@ def compute_quantile_stats_for_dataset(dataset: LeRobotDataset) -> dict[str, dic
     return aggregate_stats(episode_stats_list)
 
 
+def compute_numeric_quantile_stats_from_parquets(dataset: LeRobotDataset) -> dict[str, dict]:
+    """Compute quantile stats for non-visual features directly from v3 parquet files.
+
+    MolmoAct2 uses identity normalization for visual features and quantile normalization
+    for state/action features. This avoids decoding every video frame when only numeric
+    stats are needed for local training.
+    """
+    root = dataset.meta.root
+    data_paths = sorted((root / "data").glob("chunk-*/file-*.parquet"))
+    if not data_paths:
+        raise FileNotFoundError(f"No v3 parquet data files found under {root / 'data'}")
+
+    feature_keys = [
+        key
+        for key, feature in dataset.features.items()
+        if feature["dtype"] not in {"image", "video", "string"}
+    ]
+    collected: dict[str, list[np.ndarray]] = {key: [] for key in feature_keys}
+
+    for data_path in tqdm(data_paths, desc="read parquet data files"):
+        df = pd.read_parquet(data_path)
+        for key in feature_keys:
+            if key not in df.columns:
+                continue
+
+            values = df[key].to_numpy()
+            if len(values) == 0:
+                continue
+
+            first = values[0]
+            if isinstance(first, (np.ndarray, list, tuple)):
+                arr = np.stack(values).astype(np.float64)
+            else:
+                arr = values.astype(np.float64)
+            collected[key].append(arr)
+
+    stats = dict(dataset.meta.stats or {})
+    for key, arrays in collected.items():
+        if not arrays:
+            continue
+        data = np.concatenate(arrays, axis=0)
+        stats[key] = get_feature_stats(
+            data,
+            axis=0,
+            keepdims=data.ndim == 1,
+            quantile_list=DEFAULT_QUANTILES,
+        )
+
+    return stats
+
+
 def augment_dataset_with_quantile_stats(
     repo_id: str,
     root: str | Path | None = None,
     overwrite: bool = False,
+    push_to_hub: bool = True,
+    numeric_only: bool = False,
 ) -> None:
     """Augment a dataset with quantile statistics if they are missing.
 
@@ -208,7 +262,10 @@ def augment_dataset_with_quantile_stats(
 
     logging.info("Dataset does not contain quantile statistics. Computing them now...")
 
-    new_stats = compute_quantile_stats_for_dataset(dataset)
+    if numeric_only:
+        new_stats = compute_numeric_quantile_stats_from_parquets(dataset)
+    else:
+        new_stats = compute_quantile_stats_for_dataset(dataset)
 
     logging.info("Updating dataset metadata with new quantile statistics")
     dataset.meta.stats = new_stats
@@ -216,6 +273,9 @@ def augment_dataset_with_quantile_stats(
     write_stats(new_stats, dataset.meta.root)
 
     logging.info("Successfully updated dataset with quantile statistics")
+    if not push_to_hub:
+        return
+
     dataset.push_to_hub()
 
     hub_api = HfApi()
@@ -248,6 +308,17 @@ def main():
         action="store_true",
         help="Overwrite existing quantile statistics if they already exist",
     )
+    parser.add_argument(
+        "--push-to-hub",
+        type=lambda input: input.lower() == "true",
+        default=True,
+        help="Push the updated dataset to the hub.",
+    )
+    parser.add_argument(
+        "--numeric-only",
+        action="store_true",
+        help="Only compute quantile stats for non-visual parquet features.",
+    )
 
     args = parser.parse_args()
     root = Path(args.root) if args.root else None
@@ -258,6 +329,8 @@ def main():
         repo_id=args.repo_id,
         root=root,
         overwrite=args.overwrite,
+        push_to_hub=args.push_to_hub,
+        numeric_only=args.numeric_only,
     )
 
 
