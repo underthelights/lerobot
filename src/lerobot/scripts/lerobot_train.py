@@ -488,8 +488,14 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
             logging.info(train_tracker)
             if wandb_logger:
                 wandb_log_dict = train_tracker.to_dict()
+                wandb_log_dict["loss_avg"] = wandb_log_dict["loss"]
                 if output_dict:
-                    wandb_log_dict.update(output_dict)
+                    tracker_metric_keys = set(wandb_log_dict)
+                    for key, value in output_dict.items():
+                        # Policy outputs may use generic names like "loss"; keep averaged tracker
+                        # metrics intact and log raw policy metrics under their own namespace.
+                        log_key = f"policy/{key}" if key in tracker_metric_keys else key
+                        wandb_log_dict[log_key] = value
                 # Log sample weighting statistics if enabled
                 if sample_weighter is not None:
                     weighter_stats = sample_weighter.get_stats()

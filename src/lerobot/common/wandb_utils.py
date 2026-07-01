@@ -180,6 +180,10 @@ class WandBLogger:
                 self._wandb_custom_step_key.add(new_custom_key)
                 self._wandb.define_metric(new_custom_key, hidden=True)
 
+        data = {}
+        if custom_step_key is not None:
+            data[f"{mode}/{custom_step_key}"] = d[custom_step_key]
+
         for k, v in d.items():
             if not isinstance(v, (int | float | str)):
                 logging.warning(
@@ -188,16 +192,18 @@ class WandBLogger:
                 continue
 
             # Do not log the custom step key itself.
-            if self._wandb_custom_step_key is not None and k in self._wandb_custom_step_key:
+            if custom_step_key is not None and k == custom_step_key:
                 continue
 
-            if custom_step_key is not None:
-                value_custom_step = d[custom_step_key]
-                data = {f"{mode}/{k}": v, f"{mode}/{custom_step_key}": value_custom_step}
-                self._wandb.log(data)
-                continue
+            data[f"{mode}/{k}"] = v
 
-            self._wandb.log(data={f"{mode}/{k}": v}, step=step)
+        if not data:
+            return
+
+        if custom_step_key is not None:
+            self._wandb.log(data)
+        else:
+            self._wandb.log(data=data, step=step)
 
     def log_video(self, video_path: str, step: int, mode: str = "train"):
         if mode not in {"train", "eval"}:

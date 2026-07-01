@@ -150,10 +150,19 @@ def legacy_load_episodes(local_dir: Path) -> dict:
     return {item["episode_index"]: item for item in sorted(episodes, key=lambda x: x["episode_index"])}
 
 
+def normalize_legacy_stats_shapes(stats: dict) -> dict:
+    """Normalize old v2.1 stats shapes to the v3.0 aggregation contract."""
+    for feature_stats in stats.values():
+        count = feature_stats.get("count")
+        if getattr(count, "ndim", None) == 0:
+            feature_stats["count"] = count.reshape(1)
+    return stats
+
+
 def legacy_load_episodes_stats(local_dir: Path) -> dict:
     episodes_stats = load_jsonlines(local_dir / LEGACY_EPISODES_STATS_PATH)
     return {
-        item["episode_index"]: cast_stats_to_numpy(item["stats"])
+        item["episode_index"]: normalize_legacy_stats_shapes(cast_stats_to_numpy(item["stats"]))
         for item in sorted(episodes_stats, key=lambda x: x["episode_index"])
     }
 
